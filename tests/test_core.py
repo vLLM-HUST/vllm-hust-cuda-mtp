@@ -16,6 +16,7 @@ class PlannerTests(unittest.TestCase):
         self.baseline = [
             "vllm", "serve", "Qwen/Qwen3.5-35B-A3B",
             "--pipeline-parallel-size", "4", "--tensor-parallel-size", "1",
+            "--distributed-executor-backend", "ray",
             "--host", "127.0.0.1", "--port", "18185",
             "--max-model-len", "131072", "--max-num-batched-tokens", "8192",
         ]
@@ -29,6 +30,15 @@ class PlannerTests(unittest.TestCase):
         )
         self.assertEqual(self.baseline[-1], "8192")
 
+    def test_current_a6000_local_checkpoint(self):
+        baseline = self.baseline.copy()
+        baseline[2] = "/models/Qwen3.5-35B-A3B"
+        baseline.extend(["--served-model-name", "Qwen3.5-35B-A3B"])
+        self.assertIn("--speculative-config", build_command(baseline, self.report))
+        baseline[-1] = "unapproved-alias"
+        with self.assertRaisesRegex(ValueError, "approved served-model-name"):
+            build_command(baseline, self.report)
+
     def test_apc_refused(self):
         with self.assertRaisesRegex(ValueError, "not qualified"):
             build_command(self.baseline, self.report, prefix_caching=True)
@@ -41,7 +51,12 @@ class PlannerTests(unittest.TestCase):
             build_command(self.baseline, incomplete)
 
     def test_nonisolated_refused(self):
-        for arg, value in [("--host", "0.0.0.0"), ("--port", "8000"), ("--pipeline-parallel-size", "5")]:
+        for arg, value in [
+            ("--host", "0.0.0.0"),
+            ("--port", "8000"),
+            ("--pipeline-parallel-size", "5"),
+            ("--distributed-executor-backend", "mp"),
+        ]:
             candidate = self.baseline.copy()
             candidate[candidate.index(arg) + 1] = value
             with self.subTest(arg=arg, value=value), self.assertRaises(ValueError):

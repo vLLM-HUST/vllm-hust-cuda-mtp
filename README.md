@@ -5,9 +5,12 @@ vLLM MTP path on Qwen/Qwen3.5-35B-A3B, PP4 × TP1 CUDA. It does not implement a
 new drafter and it does not patch a running vLLM process. It is deliberately
 separate from the Ascend-only vSpec runtime.
 
-Current status: source and CPU tests pass; the three required host APIs were
-read-only checked in the A6000 image. **No PP4 MTP model has been launched, no
-paired GPU canary has passed, and this is not production-qualified.**
+Current status: source and CPU tests pass, and a temporary PP4 MTP1 instance
+was launched and tested on the A6000 fleet on 2026-10-13. It was then stopped
+and the original service restored. Synthetic decode throughput improved, but
+the candidate lost 34% of KV-cache capacity and one fixed long answer differed
+from the baseline. **This is not production-qualified.** See
+[`experiments/a6000-pp4/RESULTS.md`](experiments/a6000-pp4/RESULTS.md).
 
 ## What it does
 
@@ -18,8 +21,9 @@ paired GPU canary has passed, and this is not production-qualified.**
 - `plan` accepts a JSON array of baseline `vllm serve` arguments and a probe
   report, then emits a separate loopback-only, port 18xxx command with MTP1.
 - `launch` runs that command only with an explicit isolated-test acknowledgement.
-- `qualify` compares baseline and candidate `/v1/completions` responses on
-  fixed short, repeated-prefix, long-decode and concurrent prompts. It emits
+- `qualify` compares baseline and candidate `/v1/chat/completions` responses
+  with native thinking disabled, using fixed short, repeated-prefix,
+  long-decode, concurrent and cancel/recover prompts. It emits
   only metadata, not prompts or model answers. Any mismatch fails.
 
 The launcher **forces prefix caching off** for MTP. A known hybrid Mamba/MTP
@@ -34,8 +38,11 @@ correctness/cancellation/cache-hit qualification before support is added.
 Run `probe` in the *same image* as the candidate engine; save its JSON report
 in the test workspace. Prepare a JSON array of baseline `vllm serve` arguments
 for an allocated PP4 × TP1 test cell. The array must bind `127.0.0.1` to a
-port from 18000–18999, identify exactly `Qwen/Qwen3.5-35B-A3B`, and contain
-no credentials. Do not point it at a live service's port or GPUs.
+port from 18000–18999, use the Ray executor, identify either
+`Qwen/Qwen3.5-35B-A3B` or the verified
+A6000 checkpoint path `/models/Qwen3.5-35B-A3B` (the latter also requires an
+approved `--served-model-name`), and contain no credentials. Do not point it at
+a live service's port or GPUs.
 
 ```bash
 vllm-hust-cuda-mtp probe
@@ -46,6 +53,6 @@ vllm-hust-cuda-mtp qualify --baseline-url http://127.0.0.1:18184 --candidate-url
 
 `qualify` is a correctness smoke test only: it does not establish statistical
 quality, prefix-cache compatibility, cancellation safety, draft acceptance, or
-throughput benefit. Those require a separately authorized GPU test with ON/OFF
-matched workloads, metrics, and repeated runs. Do not enable this on the
-shared A6000 PP4 service on the strength of the static probe or smoke test.
+throughput benefit. The maintenance test above provides a single ON/OFF
+synthetic comparison, not repeated or cache-on production evidence. Do not
+enable this on the shared A6000 PP4 service on the strength of that result.

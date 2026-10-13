@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Sequence
 
 MODEL = "Qwen/Qwen3.5-35B-A3B"
+LOCAL_MODEL = "/models/Qwen3.5-35B-A3B"
+SERVED_MODELS = {"Qwen3.5-35B-A3B", MODEL}
 REQUIRED_FEATURES = (
     "qwen35_mtp_supports_pp",
     "hybrid_trailing_mtp_groups",
@@ -92,12 +94,16 @@ def build_command(
     if prefix_caching:
         raise ValueError("MTP + prefix caching is not qualified; refusing unsafe combination")
     args = list(baseline)
-    if len(args) < 3 or args[:2] != ["vllm", "serve"] or args[2] != MODEL:
-        raise ValueError("baseline must begin with vllm serve Qwen/Qwen3.5-35B-A3B")
+    if len(args) < 3 or args[:2] != ["vllm", "serve"] or args[2] not in {MODEL, LOCAL_MODEL}:
+        raise ValueError("baseline must serve the approved Qwen3.5-35B-A3B model")
+    if args[2] == LOCAL_MODEL and _flag(args, "--served-model-name") not in SERVED_MODELS:
+        raise ValueError("local checkpoint requires an approved served-model-name")
     if _flag(args, "--pipeline-parallel-size") != "4" or _flag(
         args, "--tensor-parallel-size"
     ) != "1":
         raise ValueError("this profile requires PP4 x TP1")
+    if _flag(args, "--distributed-executor-backend") != "ray":
+        raise ValueError("this four-host profile requires the Ray executor")
     if _flag(args, "--host") != "127.0.0.1":
         raise ValueError("experimental service must bind loopback only")
     port = _flag(args, "--port")

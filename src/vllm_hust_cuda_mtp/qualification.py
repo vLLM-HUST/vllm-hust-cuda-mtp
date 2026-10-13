@@ -1,4 +1,4 @@
-"""Fail-closed paired completion canary; no responses or secrets are logged."""
+"""Fail-closed paired chat canary; no responses or secrets are logged."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ CASES = (
     (
         "repeated-prefix",
         "系统背景：研究 vLLM 推理引擎的 KV 缓存和投机解码。" * 24
-        + "\n问题：解释为什么候选 token 仍需目标模型验证。",
-        192,
+        + "\n问题：只回复固定短语 prefix-ok，不要解释。",
+        256,
     ),
     (
         "long-decode",
@@ -48,15 +48,16 @@ def completion(origin: str, prompt: str, max_tokens: int) -> Completion:
     payload = json.dumps(
         {
             "model": MODEL,
-            "prompt": prompt,
+            "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
             "seed": 42,
             "max_tokens": max_tokens,
             "stream": False,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
     ).encode()
     request = urllib.request.Request(
-        _require_loopback(origin) + "/v1/completions",
+        _require_loopback(origin) + "/v1/chat/completions",
         data=payload,
         headers={"Content-Type": "application/json"},
     )
@@ -68,11 +69,41 @@ def completion(origin: str, prompt: str, max_tokens: int) -> Completion:
     elapsed = time.monotonic() - started
     choice = document["choices"][0]
     return Completion(
-        str(choice["text"]),
+        str(choice["message"]["content"]),
         str(choice["finish_reason"]),
         elapsed,
         int(document.get("usage", {}).get("completion_tokens", -1)),
     )
+
+
+def cancel_probe(origin: str) -> bool:
+    """Close a streaming response after the first content delta."""
+    payload = json.dumps(
+        {
+            "model": MODEL,
+            "messages": [
+                {"role": "user", "content": "用中文写一篇关于并行推理的长篇说明。"}
+            ],
+            "temperature": 0,
+            "max_tokens": 384,
+            "stream": True,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+    ).encode()
+    request = urllib.request.Request(
+        _require_loopback(origin) + "/v1/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        for line in response:
+            if not line.startswith(b"data: ") or line.strip() == b"data: [DONE]":
+                continue
+            event = json.loads(line[6:])
+            choices = event.get("choices", [])
+            if choices and choices[0].get("delta", {}).get("content"):
+                return True
+    return False
 
 
 def qualify(baseline_url: str, candidate_url: str) -> dict[str, object]:
@@ -114,7 +145,7 @@ def qualify(baseline_url: str, candidate_url: str) -> dict[str, object]:
     # pair is compared only with its own exact prompt.
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         pending = [
-            pool.submit(completion, origin, f"并发校验 {index}：只回复数字 {index}", 32)
+            pool.submit(completion, origin, f"并发校验 {index}：只回复固定短语 parallel-{index}-ok，不要解释。", 128)
             for index in range(2)
             for origin in (baseline_url, candidate_url)
         ]
@@ -129,6 +160,23 @@ def qualify(baseline_url: str, candidate_url: str) -> dict[str, object]:
                 "finished": baseline.finish_reason == candidate.finish_reason == "stop",
             }
         )
+    cancelled_a = cancel_probe(baseline_url)
+    cancelled_b = cancel_probe(candidate_url)
+    recovery_a = completion(baseline_url, "只回复固定短语 recovery-ok。", 64)
+    recovery_b = completion(candidate_url, "只回复固定短语 recovery-ok。", 64)
+    results.append(
+        {
+            "case": "cancel-and-recover",
+            "exact_output": recovery_a.text == recovery_b.text,
+            "nonempty": bool(recovery_a.text.strip()) and bool(recovery_b.text.strip()),
+            "finished": (
+                cancelled_a
+                and cancelled_b
+                and recovery_a.finish_reason == recovery_b.finish_reason == "stop"
+            ),
+            "stream_cancelled_early": cancelled_a and cancelled_b,
+        }
+    )
     passed = all(
         item["exact_output"] and item["nonempty"] and item["finished"]
         for item in results

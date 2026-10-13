@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-hust-cuda-mtp"
+version = "0.1.0"
+description = "Fail-closed CUDA Qwen3.5 MTP launch and qualification MOD"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+vllm-hust-cuda-mtp = "vllm_hust_cuda_mtp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
